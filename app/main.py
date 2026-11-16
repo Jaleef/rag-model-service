@@ -34,14 +34,18 @@ async def lifespan(app: FastAPI):
     app.state.embedding = None
     app.state.reranker = None
 
+
+app = FastAPI(
+    title="RAG Model Service",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+
 def main():
     import uvicorn
-    
-    app = FastAPI(
-        title="RAG Model Service",
-        version="1.0.0",
-        lifespan=lifespan,
-    )
+
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000)
 
 
 class EmbeddingRequest(BaseModel):
