@@ -11,6 +11,14 @@ from app.models.runtime import resolve_model_path
 
 
 class SettingsTests(unittest.TestCase):
+    def test_default_model_dir_is_project_local(self) -> None:
+        # Local checkouts keep models in ./models; Docker overrides this with
+        # MODEL_DIR=/models.
+        self.assertEqual(
+            Settings.model_fields["model_dir"].default,
+            Path("models"),
+        )
+
     def test_model_paths_are_derived_from_ids(self) -> None:
         settings = Settings(
             model_dir=Path("models"),

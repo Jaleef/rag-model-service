@@ -6,8 +6,9 @@ Usage::
     uv run python -m scripts.download_models --model embedding
     uv run python -m scripts.download_models --revision main
 
-The default target directory is ``MODEL_DIR`` (``/models``).  Set
-``HF_TOKEN`` for gated/private repositories.
+The default target directory is ``MODEL_DIR`` (``./models``).  In the
+container the same models live under ``/models``.  Set ``HF_TOKEN`` for
+gated/private repositories.
 """
 
 from __future__ import annotations

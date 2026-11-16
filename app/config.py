@@ -31,7 +31,11 @@ class Settings(BaseSettings):
     # ``*_model_id`` is a Hugging Face repository id (or a model name).
     # The model is loaded from ``MODEL_DIR / <repository name>`` unless an
     # explicit ``*_MODEL_PATH`` is provided.
-    model_dir: Path = Path("/models")
+    #
+    # The default is project-relative so that a local checkout with
+    # ``./models`` works out of the box.  The Docker image explicitly sets
+    # ``MODEL_DIR=/models`` (where the volume is mounted).
+    model_dir: Path = Path("models")
     embedding_model_id: str = "Qwen/Qwen3-Embedding-0.6B"
     reranker_model_id: str = "Qwen/Qwen3-Reranker-0.6B"
     embedding_model_path: Path | None = None

@@ -48,7 +48,7 @@ uv sync
 ### 2. 下载模型
 
 ```bash
-# 两个模型都下载到 MODEL_DIR（默认 /models）
+# 两个模型都下载到项目根目录的 ./models
 uv run python -m scripts.download_models
 
 # 只下载其中一个
@@ -56,11 +56,11 @@ uv run python -m scripts.download_models --model embedding
 uv run python -m scripts.download_models --model reranker
 ```
 
-在 Windows / macOS 本地开发时，建议把模型放到项目目录并设置 `MODEL_DIR`：
+默认模型目录是当前工作目录下的 `models/`（在项目根目录启动时即 `./models`），把模型放在这里后直接启动即可。如果模型在其他位置，设置 `MODEL_DIR`：
 
-```powershell
-$env:MODEL_DIR = "./models"
-uv run python -m scripts.download_models
+```bash
+export MODEL_DIR=/data/models
+# Windows PowerShell: $env:MODEL_DIR = "D:\models"
 ```
 
 目录结构应为：
@@ -152,7 +152,7 @@ curl -X POST http://localhost:8000/v1/rerank \
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `MODEL_DIR` | `/models` | 模型根目录 |
+| `MODEL_DIR` | `models` | 模型根目录（Docker 中显式设为 `/models`） |
 | `EMBEDDING_MODEL_ID` | `Qwen/Qwen3-Embedding-0.6B` | embedding 仓库 id / 响应中的模型名 |
 | `RERANKER_MODEL_ID` | `Qwen/Qwen3-Reranker-0.6B` | reranker 仓库 id / 响应中的模型名 |
 | `EMBEDDING_MODEL_PATH` | 空 | 显式指定 embedding 目录，优先级高于 `MODEL_DIR/<repo name>` |
