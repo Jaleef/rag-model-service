@@ -11,6 +11,19 @@ wheels/
 
 # Virtual environments
 .venv
+.venv-*
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local configuration
+.env
+.env.*
+!.env.example
 
 /models/
 

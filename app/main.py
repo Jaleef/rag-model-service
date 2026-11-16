@@ -1,103 +1,172 @@
+"""FastAPI application entry point.
 
+The application is assembled by :func:`create_app` so that tests can inject
+fake models and skip the heavy PyTorch runtime configuration.  Importing this
+module does not import torch or sentence-transformers; those imports happen
+when the real model wrappers are constructed during the lifespan startup.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
-import torch
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, Request, status
 
+from app.config import Settings, get_settings
 from app.models.embedding import EmbeddingModel
 from app.models.reranker import RerankerModel
+from app.models.runtime import configure_torch
+from app.routers import embedding_router, reranker_router
+from app.schemas.request import EmbeddingRequest, RerankRequest
+from app.schemas.response import HealthResponse, ReadyResponse
+
+logger = logging.getLogger(__name__)
+
+# Re-exported for backwards compatibility with code that imported the request
+# models from app.main.
+__all__ = [
+    "EmbeddingRequest",
+    "RerankRequest",
+    "app",
+    "create_app",
+    "main",
+]
 
 
-# CPU 线程控制，避免两个模型过度争抢 CPU
-torch.set_num_threads(4)
-torch.set_num_interop_threads(1)
+def _release_models(application: FastAPI) -> None:
+    application.state.embedding = None
+    application.state.reranker = None
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("Loading Embedding model...")
-    app.state.embedding = EmbeddingModel(
-        "/models/Qwen3-Embedding-0.6B"
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    settings: Settings = application.state.settings
+    configurator: Callable[[Settings], None] = application.state.runtime_configurator
+
+    configurator(settings)
+
+    try:
+        logger.info("Loading embedding model from %s", settings.embedding_path)
+        embedding = application.state.embedding_factory(
+            settings.embedding_path,
+            device=settings.device,
+            batch_size=settings.embedding_batch_size,
+        )
+        application.state.embedding = embedding
+
+        logger.info("Loading reranker model from %s", settings.reranker_path)
+        reranker = application.state.reranker_factory(
+            settings.reranker_path,
+            device=settings.device,
+            batch_size=settings.rerank_batch_size,
+            max_length=settings.rerank_max_length,
+        )
+        application.state.reranker = reranker
+    except Exception:
+        # Do not leave a half-initialized model set behind when the second
+        # model fails to load.
+        _release_models(application)
+        logger.exception("Failed to initialize models")
+        raise
+
+    logger.info("Models loaded successfully")
+    try:
+        yield
+    finally:
+        _release_models(application)
+        # Drop the local references so the models can be garbage collected.
+        embedding = None  # noqa: F841 - explicitly release references
+        reranker = None  # noqa: F841
+        logger.info("Models released")
+
+
+def create_app(
+    settings: Settings | None = None,
+    *,
+    embedding_factory: Callable[..., Any] = EmbeddingModel,
+    reranker_factory: Callable[..., Any] = RerankerModel,
+    runtime_configurator: Callable[[Settings], None] = configure_torch,
+) -> FastAPI:
+    """Build and return a configured FastAPI application."""
+
+    settings = settings or get_settings()
+
+    application = FastAPI(
+        title="RAG Model Service",
+        description=(
+            "CPU-friendly embedding and reranking service for "
+            "Qwen3-Embedding and Qwen3-Reranker."
+        ),
+        version="1.1.0",
+        lifespan=lifespan,
     )
 
-    print("Loading Reranker model...")
-    app.state.reranker = RerankerModel(
-        "/models/Qwen3-Reranker-0.6B"
+    application.state.settings = settings
+    application.state.embedding_factory = embedding_factory
+    application.state.reranker_factory = reranker_factory
+    application.state.runtime_configurator = runtime_configurator
+    application.state.embedding = None
+    application.state.reranker = None
+
+    application.include_router(embedding_router)
+    application.include_router(reranker_router)
+
+    @application.get(
+        "/health",
+        response_model=HealthResponse,
+        tags=["system"],
+        summary="Liveness probe",
     )
+    def health() -> HealthResponse:
+        return HealthResponse()
 
-    print("Models loaded successfully!")
+    @application.get(
+        "/ready",
+        response_model=ReadyResponse,
+        tags=["system"],
+        summary="Readiness probe (both models loaded)",
+        responses={
+            status.HTTP_503_SERVICE_UNAVAILABLE: {"description": "Models not loaded"},
+        },
+    )
+    def ready(request: Request) -> ReadyResponse:
+        embedding = getattr(request.app.state, "embedding", None)
+        reranker = getattr(request.app.state, "reranker", None)
+        if embedding is None or reranker is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Models are not loaded.",
+            )
 
-    yield
-
-    # 应用关闭时释放模型引用
-    app.state.embedding = None
-    app.state.reranker = None
-
-
-app = FastAPI(
-    title="RAG Model Service",
-    version="1.0.0",
-    lifespan=lifespan,
-)
-
-
-def main():
-    import uvicorn
-
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000)
-
-
-class EmbeddingRequest(BaseModel):
-    input: list[str] = Field(min_length=1, max_length=128)
-    input_type: str = "document"
-
-
-class RerankRequest(BaseModel):
-    query: str
-    documents: list[str] = Field(min_length=1, max_length=50)
-    top_n: int = Field(default=5, ge=1, le=50)
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.post("/v1/embeddings")
-def embeddings(request: EmbeddingRequest):
-    if request.input_type not in ("query", "document"):
-        raise HTTPException(
-            status_code=400,
-            detail="input_type must be query or document",
+        return ReadyResponse(
+            models={
+                "embedding": settings.embedding_model_id,
+                "reranker": settings.reranker_model_id,
+            },
         )
 
-    vectors = app.state.embedding.encode(
-        request.input,
-        request.input_type,
+    return application
+
+
+app = create_app()
+
+
+def main() -> None:
+    """Console-script / ``python -m app.main`` entry point."""
+
+    import uvicorn
+
+    settings = get_settings()
+    uvicorn.run(
+        app,
+        host=settings.host,
+        port=settings.port,
+        log_level=settings.log_level.lower(),
     )
 
-    return {
-        "model": "Qwen3-Embedding-0.6B",
-        "data": [
-            {
-                "index": i,
-                "embedding": vector,
-            }
-            for i, vector in enumerate(vectors)
-        ],
-    }
 
-
-@app.post("/v1/rerank")
-def rerank(request: RerankRequest):
-    results = app.state.reranker.rerank(
-        request.query,
-        request.documents,
-        request.top_n,
-    )
-
-    return {
-        "model": "Qwen3-Reranker-0.6B",
-        "results": results,
-    }
+if __name__ == "__main__":
+    main()
